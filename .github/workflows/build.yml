@@ -6,54 +6,93 @@ on:
 
 jobs:
   build:
-
-    runs-on: macOS-latest
+    runs-on: macos-15
 
     steps:
-    - uses: actions/checkout@v4
-      with:
-        submodules: true
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
 
-    - name: Set up Xcode 16
-      uses: maxim-lobanov/setup-xcode@v1
-      with:
-        xcode-version: '16.0'
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
 
-    - name: use cache
-      id: cache
-      uses: actions/cache@v4
-      with:
-        path: |
-          xcfs/.build
-          Frameworks/ios_system/xcfs/.build
-        key: ${{ runner.os }}-${{ hashFiles('get_frameworks.sh', 'xcfs/Package.swift') }}
+      - name: Show Xcode version
+        run: |
+          xcodebuild -version
+          xcode-select -p
 
-    - name: get frameworks
-      if: steps.cache.outputs.cache-hit != 'true'
-      run: ./get_frameworks.sh
+      - name: Use cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            xcfs/.build
+            Frameworks/ios_system/xcfs/.build
+          key: ${{ runner.os }}-${{ hashFiles('get_frameworks.sh', 'xcfs/Package.swift') }}
 
-    - name: get resources
-      if: steps.cache.outputs.cache-hit != 'true'
-      run: ./get_resources.sh
+      - name: Get frameworks
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: ./get_frameworks.sh
 
-    - name: copy xcconfig
-      run: cp template_setup.xcconfig developer_setup.xcconfig
+      - name: Get resources
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: ./get_resources.sh
 
-    - name: BlinkTests
-      run: xcodebuild -project Blink.xcodeproj -scheme BlinkTests -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPad Air (5th generation)' test | xcpretty
+      - name: Copy xcconfig
+        run: cp template_setup.xcconfig developer_setup.xcconfig
 
-    - name: actual build
-      run: set -o pipefail && xcodebuild archive -project Blink.xcodeproj -scheme Blink -sdk iphoneos -configuration Debug clean build IPHONEOS_DEPLOYMENT_TARGET='16.1' CODE_SIGN_IDENTITY='' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=NO | tee build.log | xcpretty
+      - name: List schemes and destinations
+        run: |
+          xcodebuild -list -project Blink.xcodeproj
+          xcodebuild -showdestinations -project Blink.xcodeproj -scheme Blink
 
-    - name: generate unsigned debug ipa
-      run: |
-        cd ~
-        mkdir Payload
-        mv ~/Library/Developer/Xcode/Archives/*/*/Products/Applications/Blink.app ~/Payload/
-        zip -r Blink.ipa Payload
+      - name: Build unsigned Debug app for iOS
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Blink.xcodeproj \
+            -scheme Blink \
+            -configuration Debug \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            clean build \
+            IPHONEOS_DEPLOYMENT_TARGET=16.1 \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            ONLY_ACTIVE_ARCH=NO \
+            SUPPORTS_MACCATALYST=NO \
+            | tee build.log
 
-    - name: upload ipa
-      uses: actions/upload-artifact@v4
-      with:
-        name: 'BlinkShell'
-        path: ~/Blink.ipa
+      - name: Generate unsigned debug ipa
+        run: |
+          APP_PATH="build/Build/Products/Debug-iphoneos/Blink.app"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Blink.app was not found at: $APP_PATH"
+            find build -name "*.app" -maxdepth 10
+            exit 1
+          fi
+
+          rm -rf Payload Blink.ipa
+          mkdir Payload
+          cp -R "$APP_PATH" Payload/
+          zip -r Blink.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlinkShell
+          path: Blink.ipa
+
+      - name: Upload raw build log if failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
