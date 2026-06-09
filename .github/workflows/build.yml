@@ -43,18 +43,74 @@ jobs:
       - name: Copy xcconfig
         run: cp template_setup.xcconfig developer_setup.xcconfig
 
+      - name: Patch sideload fallback paths
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path("BlinkConfig/BlinkPaths.m")
+          s = p.read_text()
+
+          # Patch App Group path:
+          # If App Groups are unavailable in sideloaded builds,
+          # fall back to the normal Documents directory instead of crashing.
+          s, n1 = re.subn(
+              r'NSString \*path = \[fm containerURLForSecurityApplicationGroupIdentifier:groupID\]\.path;\s*__groupContainerPath = path;',
+              '''NSURL *groupURL = [fm containerURLForSecurityApplicationGroupIdentifier:groupID];
+            NSString *path = groupURL.path;
+
+            if (path == nil) {
+              path = [self documentsPath];
+              NSLog(@"App Group container unavailable. Falling back to Documents path: %@", path);
+            }
+
+            __groupContainerPath = path;
+            [self _ensureFolderAtPath:__groupContainerPath];''',
+              s
+          )
+
+          # Patch iCloud path:
+          # If iCloud container is unavailable in sideloaded builds,
+          # fall back to the normal Documents directory instead of crashing.
+          s, n2 = re.subn(
+              r'NSString \*path = \[\[fm URLForUbiquityContainerIdentifier:iCloudID\] URLByAppendingPathComponent:@"Documents"\]\.path;\s*\[self _ensureFolderAtPath:path\];\s*__iCloudsDriveDocumentsPath = path;',
+              '''NSURL *iCloudURL = [fm URLForUbiquityContainerIdentifier:iCloudID];
+            NSString *path = [iCloudURL URLByAppendingPathComponent:@"Documents"].path;
+
+            if (path == nil) {
+              path = [self documentsPath];
+              NSLog(@"iCloud container unavailable. Falling back to Documents path: %@", path);
+            }
+
+            [self _ensureFolderAtPath:path];
+            __iCloudsDriveDocumentsPath = path;''',
+              s
+          )
+
+          if n1 != 1:
+              raise SystemExit(f"groupContainerPath patch failed, replacements: {n1}")
+
+          if n2 != 1:
+              raise SystemExit(f"iCloudDriveDocuments patch failed, replacements: {n2}")
+
+          p.write_text(s)
+          print("Patched BlinkConfig/BlinkPaths.m for sideload fallback paths")
+          PY
+
       - name: List schemes and destinations
         run: |
           xcodebuild -list -project Blink.xcodeproj
           xcodebuild -showdestinations -project Blink.xcodeproj -scheme Blink
 
-      - name: Build unsigned Debug app for iOS
+      - name: Build unsigned Release app for iOS
         run: |
           set -o pipefail
+
           xcodebuild \
             -project Blink.xcodeproj \
             -scheme Blink \
-            -configuration Debug \
+            -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
@@ -69,12 +125,13 @@ jobs:
             SUPPORTS_MACCATALYST=NO \
             | tee build.log
 
-      - name: Generate unsigned debug ipa
+      - name: Generate unsigned release ipa
         run: |
-          APP_PATH="build/Build/Products/Debug-iphoneos/Blink.app"
+          APP_PATH="build/Build/Products/Release-iphoneos/Blink.app"
 
           if [ ! -d "$APP_PATH" ]; then
             echo "Blink.app was not found at: $APP_PATH"
+            echo "Available .app bundles:"
             find build -name "*.app" -maxdepth 10
             exit 1
           fi
