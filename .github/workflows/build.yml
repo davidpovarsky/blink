@@ -10,7 +10,7 @@ jobs:
     runs-on: macOS-latest
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
       with:
         submodules: true
 
@@ -19,7 +19,7 @@ jobs:
 
     - name: use cache
       id: cache
-      uses: actions/cache@v2
+      uses: actions/cache@v4
       with:
         path: |
           xcfs/.build
@@ -51,7 +51,7 @@ jobs:
         zip -r Blink.ipa Payload
 
     - name: upload ipa
-      uses: actions/upload-artifact@v2.2.0
+      uses: actions/upload-artifact@v4
       with:
         name: 'BlinkShell'
         path: ~/Blink.ipa
