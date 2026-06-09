@@ -33,28 +33,32 @@ jobs:
           key: ${{ runner.os }}-${{ hashFiles('get_frameworks.sh', 'xcfs/Package.swift') }}
 
       - name: Get frameworks
-        if: steps.cache.outputs.cache-hit != 'true'
         run: ./get_frameworks.sh
 
       - name: Get resources
-        if: steps.cache.outputs.cache-hit != 'true'
         run: ./get_resources.sh
 
       - name: Copy xcconfig
         run: cp template_setup.xcconfig developer_setup.xcconfig
 
-      - name: Patch sideload fallback paths
+      - name: Patch sideload compatibility
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
 
+          # ------------------------------------------------------------
+          # Patch 1:
+          # App Group / iCloud fallback.
+          #
+          # In sideloaded builds, App Groups and iCloud containers may be
+          # unavailable. Blink normally expects them, so we fall back to
+          # the normal Documents folder instead of crashing on launch.
+          # ------------------------------------------------------------
+
           p = Path("BlinkConfig/BlinkPaths.m")
           s = p.read_text()
 
-          # Patch App Group path:
-          # If App Groups are unavailable in sideloaded builds,
-          # fall back to the normal Documents directory instead of crashing.
           s, n1 = re.subn(
               r'NSString \*path = \[fm containerURLForSecurityApplicationGroupIdentifier:groupID\]\.path;\s*__groupContainerPath = path;',
               '''NSURL *groupURL = [fm containerURLForSecurityApplicationGroupIdentifier:groupID];
@@ -70,9 +74,6 @@ jobs:
               s
           )
 
-          # Patch iCloud path:
-          # If iCloud container is unavailable in sideloaded builds,
-          # fall back to the normal Documents directory instead of crashing.
           s, n2 = re.subn(
               r'NSString \*path = \[\[fm URLForUbiquityContainerIdentifier:iCloudID\] URLByAppendingPathComponent:@"Documents"\]\.path;\s*\[self _ensureFolderAtPath:path\];\s*__iCloudsDriveDocumentsPath = path;',
               '''NSURL *iCloudURL = [fm URLForUbiquityContainerIdentifier:iCloudID];
@@ -95,7 +96,34 @@ jobs:
               raise SystemExit(f"iCloudDriveDocuments patch failed, replacements: {n2}")
 
           p.write_text(s)
-          print("Patched BlinkConfig/BlinkPaths.m for sideload fallback paths")
+          print("Patched BlinkConfig/BlinkPaths.m")
+
+          # ------------------------------------------------------------
+          # Patch 2:
+          # Disable File Provider replicated migration.
+          #
+          # The latest crash log shows the app aborting inside:
+          # MigrationFileProviderReplicatedExtension.deleteFileProviderStorage()
+          # -> NSFileProviderManager documentStorageURL
+          #
+          # That File Provider migration requires entitlements that are not
+          # reliable in a normal free sideload/AltStore install.
+          # ------------------------------------------------------------
+
+          p = Path("Blink/Migrator/Migrator.swift")
+          s = p.read_text()
+
+          s2, n3 = re.subn(
+              r'\s*MigrationFileProviderReplicatedExtension\(\),',
+              '\n      // MigrationFileProviderReplicatedExtension(), // disabled for sideload build',
+              s
+          )
+
+          if n3 != 1:
+              raise SystemExit(f"MigrationFileProviderReplicatedExtension patch failed, replacements: {n3}")
+
+          p.write_text(s2)
+          print("Disabled MigrationFileProviderReplicatedExtension for sideload build")
           PY
 
       - name: List schemes and destinations
@@ -132,7 +160,7 @@ jobs:
           if [ ! -d "$APP_PATH" ]; then
             echo "Blink.app was not found at: $APP_PATH"
             echo "Available .app bundles:"
-            find build -name "*.app" -maxdepth 10
+            find build -name "*.app" -print
             exit 1
           fi
 
@@ -153,3 +181,4 @@ jobs:
         with:
           name: build-log
           path: build.log
+          if-no-files-found: ignore
